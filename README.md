@@ -51,6 +51,11 @@ for stopping the original `RowIterator`.
 
 Use `WithOnMetadata` or `WithOnStats` when code needs hook-style callbacks
 instead of a captured result value.
+For fan-in adapters or streaming sinks that must publish row-type metadata
+before the first downstream row, prefer `WithOnMetadata`: `WithResult` is
+updated at the same lifecycle points, but an empty result set never enters the
+consumer's loop body, so loop-local polling cannot observe metadata until after
+the sequence is exhausted.
 
 If application code needs metadata or stats but does not want row values,
 `DrainRowIterator` consumes the stream internally and returns only lifecycle
