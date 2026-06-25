@@ -1,0 +1,406 @@
+package spaniter
+
+import (
+	"errors"
+	"iter"
+
+	"cloud.google.com/go/spanner"
+	sppb "cloud.google.com/go/spanner/apiv1/spannerpb"
+	"google.golang.org/api/iterator"
+)
+
+// ErrNilRowIterator reports that [RowIteratorSeq] was given a nil iterator.
+//
+// Because [RowIteratorSeq] returns an [iter.Seq2], the error is yielded when the
+// sequence is consumed rather than returned by the constructor.
+var ErrNilRowIterator = errors.New("nil row iterator")
+
+// ErrNilRow reports that an adapted source produced a nil row with a nil error.
+var ErrNilRow = errors.New("nil row")
+
+// Stats holds execution information populated on a
+// [cloud.google.com/go/spanner.RowIterator] after the iterator reaches
+// [iterator.Done].
+//
+// QueryPlan and QueryStats are set when the query used QueryWithStats. RowCount
+// is set for DML after iterator.Done. Values are not deep-copied from the
+// underlying RowIterator; treat returned maps and protos as read-only.
+type Stats struct {
+	QueryPlan  *sppb.QueryPlan
+	QueryStats map[string]any
+	RowCount   int64
+}
+
+// RowIteratorResult is the metadata and stats available from a
+// [cloud.google.com/go/spanner.RowIterator].
+//
+// RowsRead counts rows consumed from the iterator. Metadata and Stats values
+// are not deep-copied from the underlying RowIterator; treat returned maps and
+// protos as read-only.
+type RowIteratorResult struct {
+	Metadata *sppb.ResultSetMetadata
+	Stats    Stats
+	RowsRead int64
+}
+
+// Option configures [RowIteratorSeq] and [DrainRowIterator].
+type Option func(*config)
+
+type config struct {
+	drainOnEarlyStop bool
+	result           *RowIteratorResult
+	onMetadata       []func(*sppb.ResultSetMetadata)
+	onStats          []func(Stats)
+}
+
+func newConfig(opts []Option) config {
+	cfg := config{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
+}
+
+func resetResult(cfg config) {
+	if cfg.result != nil {
+		*cfg.result = RowIteratorResult{}
+	}
+}
+
+// WithDrainOnEarlyStop configures [RowIteratorSeq] to consume the remaining
+// rows after the consumer stops early.
+//
+// Draining is disabled by default to preserve normal iterator early-exit
+// behavior. Use this option when callers need [WithOnStats] to run after any
+// early stop, including a range-loop break or an adapter that stops pulling
+// because a downstream operation failed. Errors encountered only during this
+// post-stop drain cannot be yielded to the caller and therefore suppress the
+// stats hook. It has no effect on [DrainRowIterator], which always drains.
+func WithDrainOnEarlyStop() Option {
+	return func(cfg *config) {
+		cfg.drainOnEarlyStop = true
+	}
+}
+
+// WithResult stores iterator lifecycle data in result as it becomes available.
+//
+// The pointed value is reset when iteration starts. Metadata is set before the
+// first row is yielded, RowsRead is updated after each consumed row, and Stats
+// is set only after the iterator reaches [iterator.Done]. On errors, result
+// contains the partial lifecycle data observed before the error. A nil result is
+// ignored.
+func WithResult(result *RowIteratorResult) Option {
+	return func(cfg *config) {
+		if result != nil {
+			cfg.result = result
+		}
+	}
+}
+
+// WithOnMetadata registers a hook that runs once when result metadata becomes
+// available.
+//
+// For a query with rows, the hook runs after the first successful Next call and
+// before that first row is yielded, so metadata captured by the hook is visible
+// inside the first loop body. For an empty result set, the hook runs after
+// Next returns iterator.Done. A nil hook is ignored.
+func WithOnMetadata(f func(*sppb.ResultSetMetadata)) Option {
+	return func(cfg *config) {
+		if f != nil {
+			cfg.onMetadata = append(cfg.onMetadata, f)
+		}
+	}
+}
+
+// WithOnStats registers a hook that runs after the adapted iterator has reached
+// [iterator.Done] and has been stopped.
+//
+// If the consumer stops early, stats are available only when
+// [WithDrainOnEarlyStop] is also configured. A nil hook is ignored.
+func WithOnStats(f func(Stats)) Option {
+	return func(cfg *config) {
+		if f != nil {
+			cfg.onStats = append(cfg.onStats, f)
+		}
+	}
+}
+
+// RowIteratorSeq adapts a [cloud.google.com/go/spanner.RowIterator] to a Go
+// standard iterator.
+//
+// The returned sequence owns rowIter: once iteration starts it always calls
+// [*cloud.google.com/go/spanner.RowIterator.Stop] before returning. Metadata and
+// stats are exposed through [WithOnMetadata] and [WithOnStats] hooks instead of
+// requiring callers to keep reading fields from the stopped RowIterator. The
+// sequence is single-use and not safe for concurrent consumption; construct a
+// new RowIterator for another pass.
+//
+// If the returned sequence is never invoked, RowIteratorSeq cannot call Stop.
+// After constructing a sequence, callers must either consume it, pass it to code
+// that will consume or stop it, or retain responsibility for stopping the
+// original RowIterator.
+//
+// Each yielded pair is either a non-nil row with a nil error, or a nil row with
+// a non-nil terminal error. After yielding a non-nil error, the sequence stops.
+// Consumers should stop processing and return or break on the first non-nil
+// error. On terminal errors, [WithResult] contains only lifecycle data observed
+// before the error, and [WithOnStats] is not called.
+func RowIteratorSeq(rowIter *spanner.RowIterator, opts ...Option) iter.Seq2[*spanner.Row, error] {
+	if rowIter == nil {
+		cfg := newConfig(opts)
+		return func(yield func(*spanner.Row, error) bool) {
+			resetResult(cfg)
+			yield(nil, ErrNilRowIterator)
+		}
+	}
+	return rowSourceSeq(spannerRowSource{rowIter}, opts...)
+}
+
+// DrainRowIterator consumes rowIter to [iterator.Done] without yielding rows.
+//
+// The helper owns rowIter and always calls
+// [*cloud.google.com/go/spanner.RowIterator.Stop] before returning. It is useful
+// when callers need result metadata, query stats, query plan, or DML row count
+// but do not want to expose row values to application code.
+// If iteration fails, the returned result can be non-nil and contain partial
+// metadata and RowsRead observed before the error; stats are only populated
+// after a successful drain to [iterator.Done].
+//
+// Cloud Spanner only populates metadata after the first Next call, and stats
+// after Next returns iterator.Done. DrainRowIterator therefore still consumes
+// the result stream internally; it does not ask Spanner for stats without
+// reading the stream. To avoid reading data rows at the query level, callers
+// must execute a statement that returns no data rows.
+func DrainRowIterator(rowIter *spanner.RowIterator, opts ...Option) (*RowIteratorResult, error) {
+	if rowIter == nil {
+		resetResult(newConfig(opts))
+		return nil, ErrNilRowIterator
+	}
+	return drainRowSource(spannerRowSource{rowIter}, opts...)
+}
+
+type rowSource interface {
+	next() (*spanner.Row, error)
+	stop()
+	metadata() *sppb.ResultSetMetadata
+	stats() Stats
+}
+
+type spannerRowSource struct {
+	*spanner.RowIterator
+}
+
+func (s spannerRowSource) next() (*spanner.Row, error) {
+	return s.Next()
+}
+
+func (s spannerRowSource) stop() {
+	s.Stop()
+}
+
+func (s spannerRowSource) metadata() *sppb.ResultSetMetadata {
+	return s.Metadata
+}
+
+func (s spannerRowSource) stats() Stats {
+	return Stats{
+		QueryPlan:  s.QueryPlan,
+		QueryStats: s.QueryStats,
+		RowCount:   s.RowCount,
+	}
+}
+
+func rowSourceSeq(src rowSource, opts ...Option) iter.Seq2[*spanner.Row, error] {
+	cfg := newConfig(opts)
+	if src == nil {
+		return func(yield func(*spanner.Row, error) bool) {
+			resetResult(cfg)
+			yield(nil, ErrNilRowIterator)
+		}
+	}
+	return func(yield func(*spanner.Row, error) bool) {
+		resetResult(cfg)
+
+		stopped := false
+		stopOnce := func() {
+			if !stopped {
+				stopped = true
+				src.stop()
+			}
+		}
+		defer stopOnce()
+
+		metadataSent := false
+		sendMetadata := func() {
+			if metadataSent {
+				return
+			}
+			metadataSent = true
+			md := src.metadata()
+			if cfg.result != nil {
+				cfg.result.Metadata = md
+			}
+			for _, f := range cfg.onMetadata {
+				f(md)
+			}
+		}
+		sendStats := func() {
+			stats := src.stats()
+			if cfg.result != nil {
+				cfg.result.Stats = stats
+			}
+			for _, f := range cfg.onStats {
+				f(stats)
+			}
+		}
+
+		var rowsRead int64
+		updateRowsRead := func() {
+			if cfg.result != nil {
+				cfg.result.RowsRead = rowsRead
+			}
+		}
+
+		completed := false
+		for {
+			row, err := src.next()
+			if err != nil {
+				if errors.Is(err, iterator.Done) {
+					sendMetadata()
+					completed = true
+					break
+				}
+				yield(nil, err)
+				return
+			}
+			if row == nil {
+				yield(nil, ErrNilRow)
+				return
+			}
+			sendMetadata()
+			rowsRead++
+			updateRowsRead()
+			if !yield(row, nil) {
+				if cfg.drainOnEarlyStop {
+					var drained int64
+					drained, completed = drain(src)
+					rowsRead += drained
+					updateRowsRead()
+				}
+				if completed {
+					stopOnce()
+					sendStats()
+				}
+				return
+			}
+		}
+
+		stopOnce()
+		if completed {
+			sendStats()
+		}
+	}
+}
+
+func drain(src rowSource) (int64, bool) {
+	var rowsRead int64
+	for {
+		row, err := src.next()
+		if errors.Is(err, iterator.Done) {
+			return rowsRead, true
+		}
+		if err != nil || row == nil {
+			return rowsRead, false
+		}
+		rowsRead++
+	}
+}
+
+func drainRowSource(src rowSource, opts ...Option) (*RowIteratorResult, error) {
+	if src == nil {
+		return nil, ErrNilRowIterator
+	}
+	cfg := newConfig(opts)
+	resetResult(cfg)
+
+	stopped := false
+	stopOnce := func() {
+		if !stopped {
+			stopped = true
+			src.stop()
+		}
+	}
+	defer stopOnce()
+
+	var rowsRead int64
+	var metadata *sppb.ResultSetMetadata
+	var metadataSent bool
+	outcome := func(includeStats bool) *RowIteratorResult {
+		result := &RowIteratorResult{RowsRead: rowsRead}
+		if metadataSent {
+			result.Metadata = metadata
+		}
+		if includeStats {
+			result.Stats = src.stats()
+		}
+		return result
+	}
+	captureResult := func(result *RowIteratorResult) {
+		if cfg.result != nil {
+			*cfg.result = *result
+		}
+	}
+	abort := func(err error) (*RowIteratorResult, error) {
+		stopOnce()
+		result := outcome(false)
+		captureResult(result)
+		return result, err
+	}
+
+	sendMetadata := func() {
+		if metadataSent {
+			return
+		}
+		metadataSent = true
+		metadata = src.metadata()
+		if cfg.result != nil {
+			cfg.result.Metadata = metadata
+		}
+		for _, f := range cfg.onMetadata {
+			f(metadata)
+		}
+	}
+	sendStats := func(stats Stats) {
+		if cfg.result != nil {
+			cfg.result.Stats = stats
+		}
+		for _, f := range cfg.onStats {
+			f(stats)
+		}
+	}
+
+	for {
+		row, err := src.next()
+		if err != nil {
+			if errors.Is(err, iterator.Done) {
+				sendMetadata()
+				stopOnce()
+				result := outcome(true)
+				captureResult(result)
+				sendStats(result.Stats)
+				return result, nil
+			}
+			return abort(err)
+		}
+		if row == nil {
+			return abort(ErrNilRow)
+		}
+		sendMetadata()
+		rowsRead++
+		if cfg.result != nil {
+			cfg.result.RowsRead = rowsRead
+		}
+	}
+}
