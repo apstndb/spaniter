@@ -1,8 +1,10 @@
 package spaniter
 
-import sppb "cloud.google.com/go/spanner/apiv1/spannerpb"
-
-// StatsEncoding selects how [Stats] is converted to protobuf ResultSetStats.
+// StatsEncoding selects how captured stats are converted to protobuf
+// ResultSetStats when using [RowIteratorResult.StatsProto] or
+// [RowIteratorResult.ResultSet].
+//
+// Set encoding with [WithStatsEncoding] when draining a RowIterator.
 type StatsEncoding int
 
 const (
@@ -16,16 +18,19 @@ const (
 	StatsEncodingDMLExact
 )
 
-// ResultSetStatsEncoded returns s as *sppb.ResultSetStats using enc.
-//
-// Most callers should use [Stats.ResultSetStats] or pass [StatsEncodingDefault].
-// Use [StatsEncodingDMLExact] only for executed standard DML where
-// row_count_exact:0 must be preserved.
-func (s Stats) ResultSetStatsEncoded(enc StatsEncoding) (*sppb.ResultSetStats, error) {
+// WithStatsEncoding configures how [RowIteratorResult.StatsProto] encodes row
+// counts for a drained iterator. The default is [StatsEncodingDefault].
+func WithStatsEncoding(enc StatsEncoding) Option {
+	return func(cfg *config) {
+		cfg.statsEncoding = enc
+	}
+}
+
+func (enc StatsEncoding) encodeRowCount(rowCount int64) bool {
 	switch enc {
 	case StatsEncodingDMLExact:
-		return s.resultSetStats(true)
+		return true
 	default:
-		return s.resultSetStats(s.RowCount != 0)
+		return rowCount != 0
 	}
 }

@@ -43,27 +43,17 @@ Useful narrower commands:
 
 - `Stats` mirrors public `spanner.RowIterator` fields; values are not
   deep-copied and should be treated as read-only.
-- `Stats.ResultSetStats` converts to protobuf `ResultSetStats` for downstream
-  code that needs that shape. It returns `nil, nil` when there are no top-level
-  ResultSetStats fields to encode. Preserve the distinction between absent `QueryStats` (`nil`) and
-  present empty query stats (`map[string]any{}`).
-- `Stats.ResultSetStatsEncoded` and `StatsEncoding` centralize row-count encoding
-  (`StatsEncodingDefault` vs `StatsEncodingDMLExact`). Prefer these over ad hoc
-  `ResultSetStats` / `ResultSetStatsForDML` branching in callers.
-- `RowIteratorResult.ResultSet` builds `*sppb.ResultSet` from materialized rows
-  and captured lifecycle data.
+- Configure protobuf stats encoding with `WithStatsEncoding` when draining.
+  Default omits `row_count_exact` for zero row counts; `StatsEncodingDMLExact`
+  preserves `row_count_exact:0` for executed standard DML (not PLAN).
+- `RowIteratorResult.StatsProto` and `RowIteratorResult.ResultSet` are the only
+  public protobuf conversion entry points. Preserve the distinction between
+  absent `QueryStats` (`nil`) and present empty query stats (`map[string]any{}`).
 - `PullRowIteratorSeq` wraps `RowIteratorSeq` for `iter.Pull2` consumers and
   normalizes terminal errors to `ok=false` when `err!=nil`.
 - `Stats` cannot distinguish absent row count from `row_count_exact:0` because
-  the Go client exposes row count as a plain `int64`.
-- `Stats.ResultSetStatsForDML` is for standard DML callers that need
-  `row_count_exact`, including zero. Equivalent to
-  `ResultSetStatsEncoded(StatsEncodingDMLExact)`. Do not use for PLAN mode or
-  read-only queries. Partitioned DML is outside RowIterator:
-  `Client.PartitionedUpdate` returns counts directly rather than through
-  `RowIterator`.
-- `Stats.HasResultSetStats` is deprecated; call `ResultSetStats` and check for
-  a nil message instead.
+  the Go client exposes row count as a plain `int64`. Partitioned DML is
+  outside RowIterator: `Client.PartitionedUpdate` returns counts directly.
 - Avoid adding a public `IsZero() bool` method unless you intentionally want
   JSON/YAML zero-value hooks to use it.
 
