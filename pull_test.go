@@ -96,6 +96,24 @@ func TestPullRowSourceSeqStopsBeforeFirstPullResetsWithResult(t *testing.T) {
 	}
 }
 
+func TestPullRowSourceSeqWithDrainOnEarlyStopStopsBeforeFirstPull(t *testing.T) {
+	t.Parallel()
+
+	src := &stubRowSource{
+		rows:      []*spanner.Row{{}},
+		md:        metadataWithColumnNames("id"),
+		wantStats: Stats{RowCount: 1},
+	}
+	_, stop := pullRowSourceSeq(src, WithDrainOnEarlyStop())
+	stop()
+	if !src.stopped {
+		t.Fatal("source was not stopped before first pull")
+	}
+	if src.nextCalls != 0 {
+		t.Fatalf("nextCalls = %d, want 0 without draining before first pull", src.nextCalls)
+	}
+}
+
 func TestPullRowIteratorSeqStopsOnTerminalError(t *testing.T) {
 	t.Parallel()
 

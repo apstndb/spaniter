@@ -12,6 +12,10 @@ import (
 // Query plan and query stats encode from the captured [Stats] value whenever
 // present. Partial results from errors omit row counts even when
 // [StatsEncodingDMLExact] is configured.
+//
+// Call this only on [RowIteratorResult] values produced or filled by spaniter
+// ([WithResult], [DrainRowIterator], [PullRowIteratorSeq]). Manual struct
+// literals omit unexported lifecycle state and may omit row counts.
 func (r RowIteratorResult) StatsProto() (*sppb.ResultSetStats, error) {
 	encodeRowCount := false
 	if r.statsCaptured {
@@ -24,7 +28,8 @@ func (r RowIteratorResult) StatsProto() (*sppb.ResultSetStats, error) {
 // lifecycle data captured while draining a RowIterator.
 //
 // rows may be nil when row values are intentionally omitted. Stats encoding
-// comes from [WithStatsEncoding] on the drain options.
+// comes from [WithStatsEncoding] on the drain options. Use only on
+// package-produced [RowIteratorResult] values; see [RowIteratorResult.StatsProto].
 func (r RowIteratorResult) ResultSet(rows []*structpb.ListValue) (*sppb.ResultSet, error) {
 	out := &sppb.ResultSet{
 		Rows:     rows,

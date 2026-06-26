@@ -198,6 +198,62 @@ func TestRowIteratorResult_StatsProtoOmitsUncapturedDMLExact(t *testing.T) {
 	}
 }
 
+func TestRowIteratorSeqWithStatsEncodingDMLExact(t *testing.T) {
+	t.Parallel()
+
+	md := metadataWithColumnNames("id")
+	row := mustNewRow(t, []string{"id"}, []any{int64(1)})
+	src := &stubRowSource{
+		rows:      []*spanner.Row{row},
+		md:        md,
+		wantStats: Stats{RowCount: 0},
+	}
+	var result RowIteratorResult
+	for row, err := range rowSourceSeq(src, WithResult(&result), WithStatsEncoding(StatsEncodingDMLExact)) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = row
+	}
+	got, err := result.StatsProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.GetRowCount().(*sppb.ResultSetStats_RowCountExact); !ok {
+		t.Fatalf("RowCount type = %T, want RowCountExact", got.GetRowCount())
+	}
+}
+
+func TestRowIteratorSeqWithStatsEncodingAndEarlyStopDrain(t *testing.T) {
+	t.Parallel()
+
+	rows := []*spanner.Row{
+		mustNewRow(t, []string{"id"}, []any{int64(1)}),
+		mustNewRow(t, []string{"id"}, []any{int64(2)}),
+	}
+	src := &stubRowSource{
+		rows:      rows,
+		md:        metadataWithColumnNames("id"),
+		wantStats: Stats{RowCount: 0},
+	}
+	var result RowIteratorResult
+	seq := rowSourceSeq(src, WithResult(&result), WithStatsEncoding(StatsEncodingDMLExact), WithDrainOnEarlyStop())
+	for row, err := range seq {
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = row
+		break
+	}
+	got, err := result.StatsProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.GetRowCount().(*sppb.ResultSetStats_RowCountExact); !ok {
+		t.Fatalf("RowCount type = %T, want RowCountExact after early-stop drain", got.GetRowCount())
+	}
+}
+
 func TestDrainRowSource_midStreamErrorOmitsFabricatedDMLStats(t *testing.T) {
 	t.Parallel()
 

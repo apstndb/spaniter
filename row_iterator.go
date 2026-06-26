@@ -72,6 +72,12 @@ func (s Stats) resultSetStats(encodeRowCount bool) (*sppb.ResultSetStats, error)
 // are not deep-copied from the underlying RowIterator; treat returned maps and
 // protos as read-only. Stats protobuf encoding is configured by
 // [WithStatsEncoding] on the drain options.
+//
+// Values returned or captured by [RowIteratorSeq], [DrainRowIterator], and
+// [PullRowIteratorSeq] carry unexported lifecycle state required by
+// [RowIteratorResult.StatsProto] and [RowIteratorResult.ResultSet]. Do not
+// construct RowIteratorResult manually for protobuf conversion; use
+// [WithResult] or the value returned from [DrainRowIterator].
 type RowIteratorResult struct {
 	Metadata      *sppb.ResultSetMetadata
 	Stats         Stats
@@ -395,9 +401,7 @@ func drainRowSource(src rowSource, opts ...Option) (*RowIteratorResult, error) {
 	}
 	captureResult := func(result *RowIteratorResult) {
 		if cfg.result != nil {
-			enc := cfg.statsEncoding
 			*cfg.result = *result
-			cfg.result.statsEnc = enc
 		}
 	}
 	abort := func(err error) (*RowIteratorResult, error) {

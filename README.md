@@ -20,7 +20,8 @@ preserving the Spanner iterator lifecycle.
 - `WithStatsEncoding`: selects row-count protobuf encoding for drained results.
 - `RowIteratorResult.StatsProto`: converts captured stats to `*sppb.ResultSetStats`
   using the encoding from drain options. Returns `nil, nil` when there are no
-  top-level ResultSetStats fields to encode.
+  top-level ResultSetStats fields to encode. Use only on values returned or
+  captured by spaniter; manual struct literals omit unexported lifecycle state.
 - `RowIteratorResult.ResultSet`: builds `*sppb.ResultSet` from materialized rows
   and captured lifecycle data.
 - `PullRowIteratorSeq`: `iter.Pull2` adapter that normalizes terminal errors.
@@ -126,12 +127,20 @@ use `StatsEncodingDMLExact` for PLAN mode or read-only queries.
 
 ```go
 result, err := spaniter.DrainRowIterator(rowIter,
-	spaniter.WithResult(&capture),
 	spaniter.WithStatsEncoding(spaniter.StatsEncodingDMLExact),
 )
-stats, err := capture.StatsProto()
-rs, err := capture.ResultSet(rows)
+if err != nil {
+	return err
+}
+stats, err := result.StatsProto()
+rs, err := result.ResultSet(rows)
 ```
+
+`StatsProto` and `ResultSet` depend on unexported state set during draining.
+Use the value returned from `DrainRowIterator` or a `WithResult` capture target;
+do not build `RowIteratorResult` manually for protobuf conversion. Callers that
+only need the `Stats` struct can keep using `WithOnStats` without protobuf
+conversion.
 
 `StatsProto` returns `nil, nil` when there are no top-level ResultSetStats
 fields to encode. Partitioned DML counts come from `Client.PartitionedUpdate`,
@@ -184,6 +193,32 @@ rows := spaniter.RowIteratorSeq(rowIter,
 	}),
 )
 ```
+
+## PullRowIteratorSeq
+
+Consumers using `iter.Pull2` should prefer `PullRowIteratorSeq`. It normalizes
+terminal errors: when the sequence yields `(nil, err)`, pull returns
+`(nil, err, false)` instead of `(nil, err, true)`. Check `err` before `ok`.
+
+```go
+pull, stop := spaniter.PullRowIteratorSeq(rowIter)
+defer stop()
+
+for {
+	row, err, ok := pull()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		break
+	}
+	_ = row
+}
+```
+
+`stop` releases the `RowIterator` even when called before the first `pull`.
+After the first pull, `RowIteratorSeq` owns the iterator until the sequence
+ends.
 
 ## Example: spanvalue/writer
 

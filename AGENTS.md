@@ -47,8 +47,10 @@ Useful narrower commands:
   Default omits `row_count_exact` for zero row counts; `StatsEncodingDMLExact`
   preserves `row_count_exact:0` for executed standard DML (not PLAN).
 - `RowIteratorResult.StatsProto` and `RowIteratorResult.ResultSet` are the only
-  public protobuf conversion entry points. Preserve the distinction between
-  absent `QueryStats` (`nil`) and present empty query stats (`map[string]any{}`).
+  public protobuf conversion entry points. Use them only on values returned or
+  captured by spaniter (`WithResult`, `DrainRowIterator`, `PullRowIteratorSeq`).
+  Preserve the distinction between absent `QueryStats` (`nil`) and present empty
+  query stats (`map[string]any{}`).
 - `PullRowIteratorSeq` wraps `RowIteratorSeq` for `iter.Pull2` consumers and
   normalizes terminal errors to `ok=false` when `err!=nil`.
 - `Stats` cannot distinguish absent row count from `row_count_exact:0` because
