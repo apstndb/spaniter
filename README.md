@@ -62,6 +62,9 @@ that immediately consumes `iter.Seq2[*spanner.Row, error]`. Merely accepting,
 storing, or forwarding the sequence does not invoke it or stop the underlying
 `RowIterator`. Many consumers do not need `ResultSetMetadata`; they can process
 rows directly.
+Use the inline form only when the called function consumes the sequence
+synchronously before returning; otherwise bind the `RowIterator` and keep
+responsibility for `Stop`.
 
 ```go
 func consumeRows(rows iter.Seq2[*spanner.Row, error]) error {
@@ -167,7 +170,9 @@ expressed as `iter.Seq2`.
 pull, or after an empty sequence ends, so `WithResult` has already recorded the
 metadata. `RowIteratorHooksFromWriter` then registers the row type and flushes
 after a successful run; for a delimited writer with headers, this permits
-header-only output for an empty result set.
+header-only output for an empty result set. This call synchronously pulls the
+sequence before returning, so it can take lifecycle ownership of the inline
+`RowIteratorSeq` argument.
 
 ```go
 stmt := spanner.Statement{SQL: sql}
