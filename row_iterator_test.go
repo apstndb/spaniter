@@ -3,11 +3,14 @@ package spaniter
 import (
 	"errors"
 	"iter"
+	"strings"
 	"testing"
 
 	"cloud.google.com/go/spanner"
 	sppb "cloud.google.com/go/spanner/apiv1/spannerpb"
 	"google.golang.org/api/iterator"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var _ rowSource = (*stubRowSource)(nil)
@@ -123,6 +126,107 @@ func TestDrainRowIterator_nilIteratorWithResultResets(t *testing.T) {
 		t.Fatalf("RowsRead = %d, want 0", result.RowsRead)
 	}
 	requireZeroStats(t, result.Stats)
+}
+
+func TestStats_ResultSetStats(t *testing.T) {
+	t.Parallel()
+
+	plan := &sppb.QueryPlan{}
+	wantQueryStats, err := structpb.NewStruct(map[string]any{
+		"elapsed_ms":    1.5,
+		"rows_returned": float64(3),
+		"nested": map[string]any{
+			"cached": true,
+		},
+		"values": []any{"x", nil, float64(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := (Stats{
+		QueryPlan:  plan,
+		QueryStats: wantQueryStats.AsMap(),
+		RowCount:   2,
+	}).ResultSetStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.QueryPlan != plan {
+		t.Fatal("QueryPlan was not preserved")
+	}
+	if !proto.Equal(got.QueryStats, wantQueryStats) {
+		t.Fatalf("QueryStats = %v, want %v", got.QueryStats, wantQueryStats)
+	}
+	if _, ok := got.GetRowCount().(*sppb.ResultSetStats_RowCountExact); !ok {
+		t.Fatalf("RowCount type = %T, want RowCountExact", got.GetRowCount())
+	}
+	if got.GetRowCountExact() != 2 {
+		t.Fatalf("RowCountExact = %d, want 2", got.GetRowCountExact())
+	}
+}
+
+func TestStats_ResultSetStatsQueryStatsPresence(t *testing.T) {
+	t.Parallel()
+
+	gotNil, err := (Stats{}).ResultSetStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotNil.QueryStats != nil {
+		t.Fatalf("QueryStats = %v, want nil", gotNil.QueryStats)
+	}
+
+	gotEmpty, err := (Stats{QueryStats: map[string]any{}}).ResultSetStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEmpty.QueryStats == nil {
+		t.Fatal("QueryStats = nil, want empty struct")
+	}
+	if len(gotEmpty.QueryStats.Fields) != 0 {
+		t.Fatalf("QueryStats fields = %v, want empty", gotEmpty.QueryStats.Fields)
+	}
+}
+
+func TestStats_ResultSetStatsOmitsZeroRowCount(t *testing.T) {
+	t.Parallel()
+
+	got, err := (Stats{RowCount: 0}).ResultSetStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetRowCount() != nil {
+		t.Fatalf("RowCount = %T, want nil", got.GetRowCount())
+	}
+}
+
+func TestStats_ResultSetStatsForDMLIncludesZero(t *testing.T) {
+	t.Parallel()
+
+	got, err := (Stats{RowCount: 0}).ResultSetStatsForDML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.GetRowCount().(*sppb.ResultSetStats_RowCountExact); !ok {
+		t.Fatalf("RowCount type = %T, want RowCountExact", got.GetRowCount())
+	}
+	if got.GetRowCountExact() != 0 {
+		t.Fatalf("RowCountExact = %d, want 0", got.GetRowCountExact())
+	}
+}
+
+func TestStats_ResultSetStatsQueryStatsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := (Stats{
+		QueryStats: map[string]any{"unsupported": func() {}},
+	}).ResultSetStats()
+	if err == nil {
+		t.Fatal("error = nil, want query stats encoding error")
+	}
+	if !strings.Contains(err.Error(), "encode query stats") {
+		t.Fatalf("error = %v, want encode query stats context", err)
+	}
 }
 
 func TestRowSourceSeq_metadataBeforeFirstYield(t *testing.T) {

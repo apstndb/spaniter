@@ -1,5 +1,7 @@
 # spaniter
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/apstndb/spaniter.svg)](https://pkg.go.dev/github.com/apstndb/spaniter)
+
 `spaniter` adapts Cloud Spanner row streams to Go standard iterators.
 
 The module is deliberately lower-level than `github.com/apstndb/spanvalue`: it
@@ -15,6 +17,10 @@ preserving the Spanner iterator lifecycle.
 - `WithOnMetadata`: invokes a callback once when `ResultSetMetadata` becomes available.
 - `WithOnStats`: invokes a callback after completion with query plan, query
   stats, and DML row count.
+- `Stats.ResultSetStats`: converts captured stats to `*sppb.ResultSetStats`
+  for protobuf-oriented downstream code.
+- `Stats.ResultSetStatsForDML`: converts captured DML stats when `RowCount`
+  must be represented as `row_count_exact`, including zero.
 - `WithDrainOnEarlyStop`: optionally drains remaining rows after an early consumer stop so stats can be populated.
 - `Rows`: adapt already-built rows for tests and virtual result sets.
 - `SliceToRowSeq`: adapt existing `[]*spanner.Row` fixtures for downstream tests and fakes.
@@ -25,7 +31,7 @@ Cloud Spanner result metadata becomes available after the first `Next` call,
 unless that call returns an error other than `iterator.Done`. Query plan and
 query stats become available after `Next` returns `iterator.Done` only for an
 iterator created with `QueryWithStats`; DML row count becomes available after
-`iterator.Done`.
+`iterator.Done` when the `RowIterator` represents a DML statement.
 
 `RowIteratorSeq` keeps those rules explicit while leaving metadata capture
 optional:
@@ -108,6 +114,19 @@ _ = result.Metadata
 _ = result.Stats
 _ = result.RowsRead
 ```
+
+Use `Stats.ResultSetStats` when downstream code needs Cloud Spanner's
+`*sppb.ResultSetStats` protobuf shape. It re-encodes query stats and represents
+non-zero `RowCount` as `row_count_exact`. Because `RowIterator` exposes row
+count as a plain `int64`, an absent row count and an exact zero DML row count
+cannot be distinguished. Use `Stats.ResultSetStatsForDML` when the caller knows
+the stats came from DML and needs `row_count_exact: 0` to be preserved. Do not
+use the DML method for ordinary queries: it would synthesize a
+`row_count_exact` field even though the Spanner API omits `row_count` for query
+stats. Conversely, using `ResultSetStats` for DML preserves non-zero counts but
+drops the explicit `row_count_exact: 0` case. The usual
+`ReadWriteTransaction.Update` and `Client.PartitionedUpdate` APIs return counts
+directly rather than through a `RowIterator`; handle those counts separately.
 
 Use `WithOnMetadata` or `WithOnStats` when code needs hook-style callbacks
 instead of a captured result value.
