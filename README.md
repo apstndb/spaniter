@@ -146,7 +146,7 @@ is enabled, `RowsRead` includes rows read during the post-stop drain, including
 rows not yielded to the consumer.
 If the post-stop drain fails, its error cannot be yielded because the consumer
 has already stopped. In that case, `WithOnStats` is not called and
-`WithResult.Stats` remains zero.
+`RowIteratorResult.Stats` remains zero.
 
 ```go
 rows := spaniter.RowIteratorSeq(rowIter,
