@@ -41,6 +41,18 @@ type Stats struct {
 	RowCount   int64
 }
 
+// HasResultSetStats reports whether [Stats.ResultSetStats] would encode any
+// field.
+//
+// This is useful when callers build an enclosing ResultSet and want to omit the
+// stats field when the default conversion would be empty. It returns false for
+// DML row_count_exact:0 because Stats cannot distinguish exact zero from an
+// absent row count. Callers that know the Stats came from DML and need
+// row_count_exact:0 should call [Stats.ResultSetStatsForDML] directly.
+func (s Stats) HasResultSetStats() bool {
+	return s.QueryPlan != nil || s.QueryStats != nil || s.RowCount != 0
+}
+
 // ResultSetStats returns s in Cloud Spanner protobuf ResultSetStats form.
 //
 // Most callers should use this method. The row-count caveat below matters only
