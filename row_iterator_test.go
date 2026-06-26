@@ -204,6 +204,39 @@ func TestStats_HasResultSetStats(t *testing.T) {
 	}
 }
 
+func TestStats_ResultSetStatsNilMatchesHasResultSetStats(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name  string
+		stats Stats
+		want  bool
+	}{
+		{name: "empty"},
+		{name: "query plan", stats: Stats{QueryPlan: &sppb.QueryPlan{}}, want: true},
+		{name: "nil query stats absent", stats: Stats{QueryStats: nil}},
+		{name: "empty query stats present", stats: Stats{QueryStats: map[string]any{}}, want: true},
+		{name: "non-zero row count", stats: Stats{RowCount: 1}, want: true},
+		{name: "zero row count", stats: Stats{RowCount: 0}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := tt.stats.ResultSetStats()
+			if err != nil {
+				t.Fatal(err)
+			}
+			hasStats := got != nil
+			if hasStats != tt.want {
+				t.Fatalf("ResultSetStats non-nil = %t, want %t", hasStats, tt.want)
+			}
+			if hasStats != tt.stats.HasResultSetStats() {
+				t.Fatalf("HasResultSetStats() = %t, want %t", tt.stats.HasResultSetStats(), hasStats)
+			}
+		})
+	}
+}
+
 func TestStats_ResultSetStatsQueryStatsPresence(t *testing.T) {
 	t.Parallel()
 
@@ -211,8 +244,8 @@ func TestStats_ResultSetStatsQueryStatsPresence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotNil.QueryStats != nil {
-		t.Fatalf("QueryStats = %v, want nil", gotNil.QueryStats)
+	if gotNil != nil {
+		t.Fatalf("ResultSetStats = %v, want nil", gotNil)
 	}
 
 	gotEmpty, err := (Stats{QueryStats: map[string]any{}}).ResultSetStats()
@@ -279,8 +312,8 @@ func TestStats_ResultSetStatsOmitsZeroRowCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.GetRowCount() != nil {
-		t.Fatalf("RowCount = %T, want nil", got.GetRowCount())
+	if got != nil {
+		t.Fatalf("ResultSetStats = %v, want nil", got)
 	}
 }
 
