@@ -2,11 +2,13 @@ package spaniter
 
 import (
 	"errors"
+	"fmt"
 	"iter"
 
 	"cloud.google.com/go/spanner"
 	sppb "cloud.google.com/go/spanner/apiv1/spannerpb"
 	"google.golang.org/api/iterator"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // ErrNilRowIterator reports that [RowIteratorSeq] was given a nil iterator.
@@ -23,12 +25,80 @@ var ErrNilRow = errors.New("nil row")
 // [iterator.Done].
 //
 // QueryPlan and QueryStats are set when the query used QueryWithStats. RowCount
-// is set for DML after iterator.Done. Values are not deep-copied from the
-// underlying RowIterator; treat returned maps and protos as read-only.
+// holds the DML row count after iterator.Done. Values are not deep-copied from
+// the underlying RowIterator; treat returned maps and protos as read-only.
+//
+// Stats mirrors the public fields exposed by
+// [cloud.google.com/go/spanner.RowIterator]. Use [Stats.ResultSetStats] when
+// downstream code needs the protobuf ResultSetStats shape. The Go client has
+// already decoded query stats to a map and exposes row count as a single int64,
+// so Stats cannot distinguish an absent row count from row_count_exact:0. The
+// Go client's PartitionedUpdate APIs return counts directly rather than through
+// RowIterator, so partitioned DML counts are outside this type's normal scope.
 type Stats struct {
 	QueryPlan  *sppb.QueryPlan
 	QueryStats map[string]any
 	RowCount   int64
+}
+
+// ResultSetStats returns s in Cloud Spanner protobuf ResultSetStats form.
+//
+// Most callers should use this method. The row-count caveat below matters only
+// to consumers that distinguish an absent row_count from row_count_exact:0; code
+// that treats an absent row_count as the zero value sees the same count either
+// way.
+//
+// QueryPlan is reused, QueryStats is re-encoded as a protobuf Struct, and a
+// non-zero RowCount is encoded as row_count_exact. RowIterator exposes row count
+// as a plain int64, so an absent row count and an exact zero row count are
+// indistinguishable; this method omits row count when RowCount is zero. Callers
+// that know RowCount is a DML count can use [Stats.ResultSetStatsForDML].
+//
+// ResultSetStats returns an error if QueryStats contains a key or value that
+// cannot be represented by structpb.Struct.
+func (s Stats) ResultSetStats() (*sppb.ResultSetStats, error) {
+	return s.resultSetStats(s.RowCount != 0)
+}
+
+// ResultSetStatsForDML returns s as ResultSetStats for DML and always encodes
+// RowCount as row_count_exact, including zero.
+//
+// This method is for consumers that need protobuf oneof presence to distinguish
+// DML row_count_exact:0 from an absent row_count. If the consumer treats an
+// absent row_count as the zero value, [Stats.ResultSetStats] is sufficient.
+//
+// Use this method only when the caller knows the Stats came from DML.
+// Using it for query stats creates a misleading row_count_exact field even
+// though the Spanner API would omit row_count for queries. Using
+// [Stats.ResultSetStats] for DML is fine for non-zero row counts, but loses the
+// distinction between absent row count and row_count_exact:0. Partitioned DML is
+// outside spaniter's RowIterator path because the Go client exposes it through
+// Client.PartitionedUpdate, not RowIterator.
+//
+// ResultSetStatsForDML returns an error if QueryStats contains a key or
+// value that cannot be represented by structpb.Struct.
+func (s Stats) ResultSetStatsForDML() (*sppb.ResultSetStats, error) {
+	return s.resultSetStats(true)
+}
+
+func (s Stats) resultSetStats(includeExactRowCount bool) (*sppb.ResultSetStats, error) {
+	var queryStats *structpb.Struct
+	if s.QueryStats != nil {
+		var err error
+		queryStats, err = structpb.NewStruct(s.QueryStats)
+		if err != nil {
+			return nil, fmt.Errorf("encode query stats: %w", err)
+		}
+	}
+
+	stats := &sppb.ResultSetStats{
+		QueryPlan:  s.QueryPlan,
+		QueryStats: queryStats,
+	}
+	if includeExactRowCount {
+		stats.RowCount = &sppb.ResultSetStats_RowCountExact{RowCountExact: s.RowCount}
+	}
+	return stats, nil
 }
 
 // RowIteratorResult is the metadata and stats available from a

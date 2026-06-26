@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	cloud.google.com/go/spanner v1.84.1
 	google.golang.org/api v0.244.0
+	google.golang.org/protobuf v1.36.6
 )
 
 require (
@@ -53,5 +54,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20250728155136-f173205681a0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250728155136-f173205681a0 // indirect
 	google.golang.org/grpc v1.74.2 // indirect
-	google.golang.org/protobuf v1.36.6 // indirect
 )
