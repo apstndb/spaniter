@@ -44,8 +44,8 @@ Useful narrower commands:
 - `Stats` mirrors public `spanner.RowIterator` fields; values are not
   deep-copied and should be treated as read-only.
 - `Stats.ResultSetStats` converts to protobuf `ResultSetStats` for downstream
-  code that needs that shape. It returns `nil, nil` when there are no fields to
-  encode. Preserve the distinction between absent `QueryStats` (`nil`) and
+  code that needs that shape. It returns `nil, nil` when there are no top-level
+  ResultSetStats fields to encode. Preserve the distinction between absent `QueryStats` (`nil`) and
   present empty query stats (`map[string]any{}`).
 - `Stats` cannot distinguish absent row count from `row_count_exact:0` because
   the Go client exposes row count as a plain `int64`.

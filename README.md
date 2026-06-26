@@ -19,7 +19,7 @@ preserving the Spanner iterator lifecycle.
   stats, and DML row count.
 - `Stats.ResultSetStats`: converts captured stats to `*sppb.ResultSetStats`
   for protobuf-oriented downstream code. Returns `nil, nil` when there are no
-  fields to encode.
+  top-level ResultSetStats fields to encode.
 - `Stats.HasResultSetStats`: deprecated; call `ResultSetStats` and check for a
   nil message instead.
 - `Stats.ResultSetStatsForDML`: converts captured standard DML stats when `RowCount`
@@ -131,8 +131,8 @@ drops the explicit `row_count_exact: 0` case. The usual
 `ReadWriteTransaction.Update` and `Client.PartitionedUpdate` APIs return counts
 directly rather than through a `RowIterator`; handle those counts separately.
 Assign the result of `Stats.ResultSetStats` to an enclosing `ResultSet` only
-when the returned message is non-nil; a `nil` return means there are no stats
-fields to encode. When calling `Stats.ResultSetStatsForDML`, assign the
+when the returned message is non-nil; a `nil` return means there are no
+top-level ResultSetStats fields to encode. When calling `Stats.ResultSetStatsForDML`, assign the
 returned message directly, including for a zero count.
 
 Use `WithOnMetadata` or `WithOnStats` when code needs hook-style callbacks

@@ -70,9 +70,9 @@ func (s Stats) HasResultSetStats() bool {
 // that know RowCount is a standard DML count can use
 // [Stats.ResultSetStatsForDML].
 //
-// When s has no fields to encode, ResultSetStats returns nil, nil so callers can
-// omit the stats field from an enclosing ResultSet without a separate presence
-// check.
+// When s has no top-level ResultSetStats fields to encode, ResultSetStats returns
+// nil, nil so callers can omit the stats field from an enclosing ResultSet
+// without a separate presence check.
 //
 // ResultSetStats returns an error if QueryStats contains a key or value that
 // cannot be represented by structpb.Struct.
