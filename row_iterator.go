@@ -102,7 +102,7 @@ func (s Stats) ResultSetStatsForDML() (*sppb.ResultSetStats, error) {
 }
 
 func (s Stats) resultSetStats(includeExactRowCount bool) (*sppb.ResultSetStats, error) {
-	if !includeExactRowCount && s.QueryPlan == nil && s.QueryStats == nil && s.RowCount == 0 {
+	if !includeExactRowCount && s.QueryPlan == nil && s.QueryStats == nil {
 		return nil, nil
 	}
 
