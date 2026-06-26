@@ -12,25 +12,90 @@ preserving the Spanner iterator lifecycle.
 - `RowIteratorSeq`: adapts `*spanner.RowIterator` to `iter.Seq2[*spanner.Row, error]`.
 - `DrainRowIterator`: consumes `*spanner.RowIterator` without yielding rows and returns metadata/stats.
 - `WithResult`: captures metadata, stats, and rows read in a `RowIteratorResult`.
-- `WithOnMetadata`: captures `ResultSetMetadata` as soon as it is available.
-- `WithOnStats`: captures query plan, query stats, and row count after a full drain.
+- `WithOnMetadata`: invokes a callback once when `ResultSetMetadata` becomes available.
+- `WithOnStats`: invokes a callback after completion with query plan, query
+  stats, and DML row count.
 - `WithDrainOnEarlyStop`: optionally drains remaining rows after an early consumer stop so stats can be populated.
 - `Rows`: adapt already-built rows for tests and virtual result sets.
 - `SliceToRowSeq`: adapt existing `[]*spanner.Row` fixtures for downstream tests and fakes.
 
 ## RowIterator lifecycle
 
-Cloud Spanner metadata is populated after the first `Next` call. Query plan,
-query stats, and DML row count are populated only after `Next` returns
+Cloud Spanner result metadata becomes available after the first `Next` call,
+unless that call returns an error other than `iterator.Done`. Query plan and
+query stats become available after `Next` returns `iterator.Done` only for an
+iterator created with `QueryWithStats`; DML row count becomes available after
 `iterator.Done`.
 
-`RowIteratorSeq` keeps those rules explicit:
+`RowIteratorSeq` keeps those rules explicit while leaving metadata capture
+optional:
+
+```go
+rows := spaniter.RowIteratorSeq(rowIter)
+
+for row, err := range rows {
+	if err != nil {
+		return err
+	}
+	_ = row
+}
+```
+
+Once the returned sequence is invoked, `RowIteratorSeq` owns the `RowIterator`
+for that run and calls `Stop` before returning. The sequence is single-use and
+must not be consumed concurrently. For short call sites, code can pass a freshly
+created iterator directly instead of binding it only to `defer Stop`:
+
+```go
+stmt := spanner.Statement{SQL: sql}
+
+for row, err := range spaniter.RowIteratorSeq(txn.Query(ctx, stmt)) {
+	if err != nil {
+		return err
+	}
+	_ = row
+}
+```
+
+The same ownership transfer applies when passing the sequence to a function
+that immediately consumes `iter.Seq2[*spanner.Row, error]`. Merely accepting,
+storing, or forwarding the sequence does not invoke it or stop the underlying
+`RowIterator`. Many consumers do not need `ResultSetMetadata`; they can process
+rows directly.
+
+```go
+func consumeRows(rows iter.Seq2[*spanner.Row, error]) error {
+	for row, err := range rows {
+		if err != nil {
+			return err
+		}
+		if err := processRow(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+stmt := spanner.Statement{SQL: sql}
+
+if err := consumeRows(spaniter.RowIteratorSeq(txn.Query(ctx, stmt))); err != nil {
+	return err
+}
+```
+
+Each yielded pair is either a non-nil row with a nil error, or a nil row with a
+non-nil terminal error. After yielding a non-nil error, the sequence stops; code
+should stop processing on the first error.
+
+If the returned lazy sequence is never invoked, callers must still retain
+responsibility for stopping the original `RowIterator`.
+
+Use `WithResult` when code needs result-set metadata, stats, or rows read outside
+the row loop:
 
 ```go
 var result spaniter.RowIteratorResult
-rows := spaniter.RowIteratorSeq(rowIter, spaniter.WithResult(&result))
-
-for row, err := range rows {
+for row, err := range spaniter.RowIteratorSeq(rowIter, spaniter.WithResult(&result)) {
 	if err != nil {
 		return err
 	}
@@ -40,14 +105,6 @@ _ = result.Metadata
 _ = result.Stats
 _ = result.RowsRead
 ```
-
-Each yielded pair is either a non-nil row with a nil error, or a nil row with a
-non-nil terminal error. After yielding a non-nil error, the sequence stops; code
-should stop processing on the first error.
-
-`RowIteratorSeq` can call `Stop` only after the sequence starts running. If the
-returned lazy sequence is never invoked, callers must still retain responsibility
-for stopping the original `RowIterator`.
 
 Use `WithOnMetadata` or `WithOnStats` when code needs hook-style callbacks
 instead of a captured result value.
@@ -84,6 +141,9 @@ it disabled unless that extra read work is acceptable.
 It has no effect on `DrainRowIterator`, which already drains. When this option
 is enabled, `RowsRead` includes rows read during the post-stop drain, including
 rows not yielded to the consumer.
+If the post-stop drain fails, its error cannot be yielded because the consumer
+has already stopped. In that case, `WithOnStats` is not called and
+`WithResult.Stats` remains zero.
 
 ```go
 rows := spaniter.RowIteratorSeq(rowIter,
@@ -96,29 +156,68 @@ rows := spaniter.RowIteratorSeq(rowIter,
 
 ## Example: spanvalue/writer
 
-`spanvalue/writer` already accepts `iter.Seq2[*spanner.Row, error]` through
-`RunRowSeqDeferredMetadata`. Capture metadata from `spaniter` and pass it as the
-deferred metadata function:
+Applications that already expose rows as `iter.Seq2` can compose `spaniter`
+with `spanvalue/writer`; this is caller-side composition, not a dependency of
+`spaniter`. When `spanvalue/writer` is the only consumer of a raw
+`*spanner.RowIterator`, its `WriteRowIterator` helper is the simpler direct
+path. The composition below is useful when the surrounding pipeline is already
+expressed as `iter.Seq2`.
+
+`RunRowSeqDeferredMetadata` evaluates its metadata function after the first
+pull, or after an empty sequence ends, so `WithResult` has already recorded the
+metadata. `RowIteratorHooksFromWriter` then registers the row type and flushes
+after a successful run; for a delimited writer with headers, this permits
+header-only output for an empty result set.
 
 ```go
-var spannerResult spaniter.RowIteratorResult
-rows := spaniter.RowIteratorSeq(rowIter, spaniter.WithResult(&spannerResult))
+stmt := spanner.Statement{SQL: sql}
 
-result, err := writer.RunRowSeqDeferredMetadata(
+var spannerResult spaniter.RowIteratorResult
+if _, err := writer.RunRowSeqDeferredMetadata(
 	func() *sppb.ResultSetMetadata { return spannerResult.Metadata },
-	rows,
+	spaniter.RowIteratorSeq(
+		txn.Query(ctx, stmt),
+		spaniter.WithResult(&spannerResult),
+	),
 	writer.RowIteratorHooksFromWriter(w),
-)
-_ = result
-_ = err
-_ = spannerResult.Stats
+); err != nil {
+	return err
+}
 ```
 
-This keeps `spaniter` independent of formatting packages while letting
-`spanvalue` reuse the standard iterator stream directly. Spanner query plan,
-query stats, and DML row count come from `spaniter`'s `WithResult` or
-`WithOnStats`; spanvalue's generic row-sequence result should not be expected to
-populate Spanner-specific stats.
+When metadata is already available and code needs hook-level control,
+`RunRowSeq` is the direct consumer form:
+
+```go
+if _, err := writer.RunRowSeq(
+	metadata,
+	spaniter.Rows(row1, row2),
+	writer.RowIteratorHooksFromWriter(w),
+); err != nil {
+	return err
+}
+```
+
+For ordinary writer use, `WriteRowSeq` wraps the same hook setup:
+
+```go
+if _, err := writer.WriteRowSeq(
+	metadata,
+	spaniter.Rows(row1, row2),
+	w,
+); err != nil {
+	return err
+}
+```
+
+This keeps `spaniter` independent of formatting packages while letting callers
+reuse the standard iterator stream directly. In this sequence-based
+composition, the `writer.RowIteratorResult` returned by `RunRowSeq`,
+`RunRowSeqDeferredMetadata`, or `WriteRowSeq` has zero `Stats`; use
+`spaniter.WithResult` or `WithOnStats` for Spanner-specific execution data. The
+writer result's `RowsRead` counts successful writes, whereas
+`spaniter.RowIteratorResult.RowsRead` counts rows consumed from the Spanner
+iterator.
 
 ## Development
 
