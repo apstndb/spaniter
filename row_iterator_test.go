@@ -77,7 +77,7 @@ func TestRowIteratorSeq_nilIteratorWithResultResets(t *testing.T) {
 
 	result := RowIteratorResult{
 		Metadata: metadataWithColumnNames("stale"),
-		Stats:    Stats{RowCount: 99, QueryStats: map[string]any{"stale": true}},
+		Stats:    Stats{RowCount: 99, QueryStats: realisticQueryStats()},
 		RowsRead: 99,
 	}
 
@@ -111,7 +111,7 @@ func TestDrainRowIterator_nilIteratorWithResultResets(t *testing.T) {
 
 	result := RowIteratorResult{
 		Metadata: metadataWithColumnNames("stale"),
-		Stats:    Stats{RowCount: 99, QueryStats: map[string]any{"stale": true}},
+		Stats:    Stats{RowCount: 99, QueryStats: realisticQueryStats()},
 		RowsRead: 99,
 	}
 
@@ -132,20 +132,14 @@ func TestStats_ResultSetStats(t *testing.T) {
 	t.Parallel()
 
 	plan := &sppb.QueryPlan{}
-	wantQueryStats, err := structpb.NewStruct(map[string]any{
-		"elapsed_ms":    1.5,
-		"rows_returned": float64(3),
-		"nested": map[string]any{
-			"cached": true,
-		},
-		"values": []any{"x", nil, float64(2)},
-	})
+	queryStats := realisticQueryStats()
+	wantQueryStats, err := structpb.NewStruct(queryStats)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := (Stats{
 		QueryPlan:  plan,
-		QueryStats: wantQueryStats.AsMap(),
+		QueryStats: queryStats,
 		RowCount:   2,
 	}).ResultSetStats()
 	if err != nil {
@@ -266,7 +260,7 @@ func TestRowSourceSeq_completeCallsStats(t *testing.T) {
 
 	md := metadataWithColumnNames("id")
 	row := mustNewRow(t, []string{"id"}, []any{int64(1)})
-	wantStats := Stats{RowCount: 1, QueryStats: map[string]any{"elapsed_ms": 1.0}}
+	wantStats := Stats{RowCount: 1, QueryStats: realisticQueryStats()}
 	src := &stubRowSource{rows: []*spanner.Row{row}, md: md, wantStats: wantStats}
 
 	var gotStats Stats
@@ -288,8 +282,8 @@ func TestRowSourceSeq_completeCallsStats(t *testing.T) {
 	if gotStats.RowCount != wantStats.RowCount {
 		t.Fatalf("RowCount = %d, want %d", gotStats.RowCount, wantStats.RowCount)
 	}
-	if gotStats.QueryStats["elapsed_ms"] != 1.0 {
-		t.Fatalf("QueryStats = %v, want elapsed_ms=1.0", gotStats.QueryStats)
+	if gotStats.QueryStats["elapsed_time"] != wantStats.QueryStats["elapsed_time"] {
+		t.Fatalf("QueryStats = %v, want elapsed_time=%q", gotStats.QueryStats, wantStats.QueryStats["elapsed_time"])
 	}
 }
 
@@ -301,7 +295,7 @@ func TestRowSourceSeq_withResultComplete(t *testing.T) {
 		mustNewRow(t, []string{"id"}, []any{int64(1)}),
 		mustNewRow(t, []string{"id"}, []any{int64(2)}),
 	}
-	wantStats := Stats{RowCount: 2, QueryStats: map[string]any{"elapsed_ms": 1.0}}
+	wantStats := Stats{RowCount: 2, QueryStats: realisticQueryStats()}
 	src := &stubRowSource{rows: rows, md: md, wantStats: wantStats}
 
 	result := RowIteratorResult{RowsRead: 99, Stats: Stats{RowCount: 99}}
@@ -335,8 +329,8 @@ func TestRowSourceSeq_withResultComplete(t *testing.T) {
 	if result.Stats.RowCount != 2 {
 		t.Fatalf("RowCount = %d, want 2", result.Stats.RowCount)
 	}
-	if result.Stats.QueryStats["elapsed_ms"] != 1.0 {
-		t.Fatalf("QueryStats = %v, want elapsed_ms=1.0", result.Stats.QueryStats)
+	if result.Stats.QueryStats["elapsed_time"] != wantStats.QueryStats["elapsed_time"] {
+		t.Fatalf("QueryStats = %v, want elapsed_time=%q", result.Stats.QueryStats, wantStats.QueryStats["elapsed_time"])
 	}
 	if !statsHookSawCaptured {
 		t.Fatal("WithResult stats were not visible before stats hook")
@@ -403,7 +397,7 @@ func TestDrainRowSource_discardsRowsAndReturnsMetadataAndStats(t *testing.T) {
 		mustNewRow(t, []string{"id"}, []any{int64(1)}),
 		mustNewRow(t, []string{"id"}, []any{int64(2)}),
 	}
-	wantStats := Stats{RowCount: 2, QueryStats: map[string]any{"elapsed_ms": 1.0}}
+	wantStats := Stats{RowCount: 2, QueryStats: realisticQueryStats()}
 	src := &stubRowSource{rows: rows, md: md, wantStats: wantStats}
 
 	var gotMD *sppb.ResultSetMetadata
@@ -905,6 +899,33 @@ func metadataWithColumnNames(names ...string) *sppb.ResultSetMetadata {
 	}
 	return &sppb.ResultSetMetadata{
 		RowType: &sppb.StructType{Fields: fields},
+	}
+}
+
+func realisticQueryStats() map[string]any {
+	// Cloud Spanner query_stats values are wire strings, even for counts,
+	// booleans, bytes, and durations.
+	return map[string]any{
+		"bytes_returned":               "8",
+		"cpu_time":                     "0.2 msecs",
+		"deleted_rows_scanned":         "0",
+		"elapsed_time":                 "0.23 msecs",
+		"filesystem_delay_seconds":     "0 msecs",
+		"is_graph_query":               "false",
+		"locking_delay":                "0 msecs",
+		"memory_peak_usage_bytes":      "4",
+		"memory_usage_percentage":      "0.000",
+		"optimizer_statistics_package": "auto_20250604_03_26_04UTC",
+		"optimizer_version":            "7",
+		"query_plan_cached":            "true",
+		"query_text":                   "SELECT 1",
+		"remote_server_calls":          "0/0",
+		"rows_returned":                "1",
+		"rows_scanned":                 "0",
+		"runtime_cached":               "true",
+		"server_queue_delay":           "0.01 msecs",
+		"statistics_load_time":         "0",
+		"total_memory_peak_usage_byte": "4",
 	}
 }
 
