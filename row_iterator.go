@@ -41,16 +41,16 @@ type Stats struct {
 	RowCount   int64
 }
 
-// IsZero reports whether s has no fields that [Stats.ResultSetStats] would
-// encode.
+// HasResultSetStats reports whether s has fields that [Stats.ResultSetStats]
+// would encode.
 //
 // This is useful when callers build an enclosing ResultSet and want to omit the
-// stats field when the default conversion would be empty. It returns true for
+// stats field when the default conversion would be empty. It returns false for
 // DML row_count_exact:0 because Stats cannot distinguish exact zero from an
-// absent row count. Callers that know the Stats came from DML and need
+// absent row count. Callers that know the Stats came from standard DML and need
 // row_count_exact:0 should call [Stats.ResultSetStatsForDML] directly.
-func (s Stats) IsZero() bool {
-	return s.QueryPlan == nil && s.QueryStats == nil && s.RowCount == 0
+func (s Stats) HasResultSetStats() bool {
+	return s.QueryPlan != nil || s.QueryStats != nil || s.RowCount != 0
 }
 
 // ResultSetStats returns s in Cloud Spanner protobuf ResultSetStats form.
@@ -64,7 +64,8 @@ func (s Stats) IsZero() bool {
 // non-zero RowCount is encoded as row_count_exact. RowIterator exposes row count
 // as a plain int64, so an absent row count and an exact zero row count are
 // indistinguishable; this method omits row count when RowCount is zero. Callers
-// that know RowCount is a DML count can use [Stats.ResultSetStatsForDML].
+// that know RowCount is a standard DML count can use
+// [Stats.ResultSetStatsForDML].
 //
 // ResultSetStats returns an error if QueryStats contains a key or value that
 // cannot be represented by structpb.Struct.
@@ -72,14 +73,14 @@ func (s Stats) ResultSetStats() (*sppb.ResultSetStats, error) {
 	return s.resultSetStats(s.RowCount != 0)
 }
 
-// ResultSetStatsForDML returns s as ResultSetStats for DML and always encodes
-// RowCount as row_count_exact, including zero.
+// ResultSetStatsForDML returns s as ResultSetStats for standard DML and always
+// encodes RowCount as row_count_exact, including zero.
 //
 // This method is for consumers that need protobuf oneof presence to distinguish
 // DML row_count_exact:0 from an absent row_count. If the consumer treats an
 // absent row_count as the zero value, [Stats.ResultSetStats] is sufficient.
 //
-// Use this method only when the caller knows the Stats came from DML.
+// Use this method only when the caller knows the Stats came from standard DML.
 // Using it for query stats creates a misleading row_count_exact field even
 // though the Spanner API would omit row_count for queries. Using
 // [Stats.ResultSetStats] for DML is fine for non-zero row counts, but loses the

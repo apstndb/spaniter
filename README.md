@@ -19,9 +19,9 @@ preserving the Spanner iterator lifecycle.
   stats, and DML row count.
 - `Stats.ResultSetStats`: converts captured stats to `*sppb.ResultSetStats`
   for protobuf-oriented downstream code.
-- `Stats.IsZero`: reports whether `ResultSetStats` would encode no fields,
+- `Stats.HasResultSetStats`: reports whether `ResultSetStats` would encode fields,
   useful when building an enclosing `ResultSet`.
-- `Stats.ResultSetStatsForDML`: converts captured DML stats when `RowCount`
+- `Stats.ResultSetStatsForDML`: converts captured standard DML stats when `RowCount`
   must be represented as `row_count_exact`, including zero.
 - `WithDrainOnEarlyStop`: optionally drains remaining rows after an early consumer stop so stats can be populated.
 - `Rows`: adapt already-built rows for tests and virtual result sets.
@@ -122,15 +122,17 @@ Use `Stats.ResultSetStats` when downstream code needs Cloud Spanner's
 non-zero `RowCount` as `row_count_exact`. Because `RowIterator` exposes row
 count as a plain `int64`, an absent row count and an exact zero DML row count
 cannot be distinguished. Use `Stats.ResultSetStatsForDML` when the caller knows
-the stats came from DML and needs `row_count_exact: 0` to be preserved. Do not
-use the DML method for ordinary queries: it would synthesize a
+the stats came from standard DML and needs `row_count_exact: 0` to be preserved.
+Do not use the DML method for ordinary queries: it would synthesize a
 `row_count_exact` field even though the Spanner API omits `row_count` for query
 stats. Conversely, using `ResultSetStats` for DML preserves non-zero counts but
 drops the explicit `row_count_exact: 0` case. The usual
 `ReadWriteTransaction.Update` and `Client.PartitionedUpdate` APIs return counts
 directly rather than through a `RowIterator`; handle those counts separately.
-Use `!stats.IsZero()` before assigning the returned stats to an enclosing
-`ResultSet` when an empty `stats` field should be omitted.
+Use `stats.HasResultSetStats()` before assigning the result of
+`Stats.ResultSetStats` to an enclosing `ResultSet` when an empty `stats` field
+should be omitted. When calling `Stats.ResultSetStatsForDML`, assign the
+returned message directly, including for a zero count.
 
 Use `WithOnMetadata` or `WithOnStats` when code needs hook-style callbacks
 instead of a captured result value.
@@ -250,5 +252,5 @@ iterator.
 ## Development
 
 ```bash
-go test ./...
+make check
 ```

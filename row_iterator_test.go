@@ -159,7 +159,7 @@ func TestStats_ResultSetStats(t *testing.T) {
 	}
 }
 
-func TestStats_IsZero(t *testing.T) {
+func TestStats_HasResultSetStats(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {
@@ -169,36 +169,36 @@ func TestStats_IsZero(t *testing.T) {
 	}{
 		{
 			name: "empty",
-			want: true,
 		},
 		{
 			name:  "query plan",
 			stats: Stats{QueryPlan: &sppb.QueryPlan{}},
+			want:  true,
 		},
 		{
 			name:  "nil query stats absent",
 			stats: Stats{QueryStats: nil},
-			want:  true,
 		},
 		{
 			name:  "empty query stats present",
 			stats: Stats{QueryStats: map[string]any{}},
+			want:  true,
 		},
 		{
 			name:  "non-zero row count",
 			stats: Stats{RowCount: 1},
+			want:  true,
 		},
 		{
 			name:  "zero row count",
 			stats: Stats{RowCount: 0},
-			want:  true,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := tt.stats.IsZero(); got != tt.want {
-				t.Fatalf("IsZero() = %t, want %t", got, tt.want)
+			if got := tt.stats.HasResultSetStats(); got != tt.want {
+				t.Fatalf("HasResultSetStats() = %t, want %t", got, tt.want)
 			}
 		})
 	}
@@ -224,6 +224,51 @@ func TestStats_ResultSetStatsQueryStatsPresence(t *testing.T) {
 	}
 	if len(gotEmpty.QueryStats.Fields) != 0 {
 		t.Fatalf("QueryStats fields = %v, want empty", gotEmpty.QueryStats.Fields)
+	}
+}
+
+func TestStats_ResultSetStatsMixedQueryStats(t *testing.T) {
+	t.Parallel()
+
+	got, err := (Stats{QueryStats: map[string]any{
+		"null_value": nil,
+		"bool_value": true,
+		"number":     1.5,
+		"object": map[string]any{
+			"nested": "value",
+		},
+		"array": []any{"x", float64(2), false},
+	}}).ResultSetStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.QueryStats == nil {
+		t.Fatal("QueryStats = nil, want struct")
+	}
+	asMap := got.QueryStats.AsMap()
+	if asMap["null_value"] != nil {
+		t.Fatalf("null_value = %v, want nil", asMap["null_value"])
+	}
+	if asMap["bool_value"] != true {
+		t.Fatalf("bool_value = %v, want true", asMap["bool_value"])
+	}
+	if asMap["number"] != 1.5 {
+		t.Fatalf("number = %v, want 1.5", asMap["number"])
+	}
+	object, ok := asMap["object"].(map[string]any)
+	if !ok {
+		t.Fatalf("object type = %T, want map[string]any", asMap["object"])
+	}
+	if object["nested"] != "value" {
+		t.Fatalf("object[nested] = %v, want value", object["nested"])
+	}
+	array, ok := asMap["array"].([]any)
+	if !ok {
+		t.Fatalf("array type = %T, want []any", asMap["array"])
+	}
+	if len(array) != 3 || array[0] != "x" || array[1] != 2.0 || array[2] != false {
+		t.Fatalf("array = %v, want [x 2 false]", array)
 	}
 }
 
