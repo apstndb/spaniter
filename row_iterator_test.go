@@ -159,7 +159,7 @@ func TestStats_ResultSetStats(t *testing.T) {
 	}
 }
 
-func TestStats_HasResultSetStats(t *testing.T) {
+func TestStats_IsZero(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {
@@ -169,36 +169,36 @@ func TestStats_HasResultSetStats(t *testing.T) {
 	}{
 		{
 			name: "empty",
+			want: true,
 		},
 		{
 			name:  "query plan",
 			stats: Stats{QueryPlan: &sppb.QueryPlan{}},
-			want:  true,
 		},
 		{
 			name:  "nil query stats absent",
 			stats: Stats{QueryStats: nil},
+			want:  true,
 		},
 		{
 			name:  "empty query stats present",
 			stats: Stats{QueryStats: map[string]any{}},
-			want:  true,
 		},
 		{
 			name:  "non-zero row count",
 			stats: Stats{RowCount: 1},
-			want:  true,
 		},
 		{
 			name:  "zero row count",
 			stats: Stats{RowCount: 0},
+			want:  true,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := tt.stats.HasResultSetStats(); got != tt.want {
-				t.Fatalf("HasResultSetStats() = %t, want %t", got, tt.want)
+			if got := tt.stats.IsZero(); got != tt.want {
+				t.Fatalf("IsZero() = %t, want %t", got, tt.want)
 			}
 		})
 	}

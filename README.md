@@ -19,8 +19,8 @@ preserving the Spanner iterator lifecycle.
   stats, and DML row count.
 - `Stats.ResultSetStats`: converts captured stats to `*sppb.ResultSetStats`
   for protobuf-oriented downstream code.
-- `Stats.HasResultSetStats`: reports whether `ResultSetStats` would encode any
-  fields, useful when building an enclosing `ResultSet`.
+- `Stats.IsZero`: reports whether `ResultSetStats` would encode no fields,
+  useful when building an enclosing `ResultSet`.
 - `Stats.ResultSetStatsForDML`: converts captured DML stats when `RowCount`
   must be represented as `row_count_exact`, including zero.
 - `WithDrainOnEarlyStop`: optionally drains remaining rows after an early consumer stop so stats can be populated.
@@ -129,8 +129,8 @@ stats. Conversely, using `ResultSetStats` for DML preserves non-zero counts but
 drops the explicit `row_count_exact: 0` case. The usual
 `ReadWriteTransaction.Update` and `Client.PartitionedUpdate` APIs return counts
 directly rather than through a `RowIterator`; handle those counts separately.
-Use `Stats.HasResultSetStats` before assigning the returned stats to an
-enclosing `ResultSet` when an empty `stats` field should be omitted.
+Use `!stats.IsZero()` before assigning the returned stats to an enclosing
+`ResultSet` when an empty `stats` field should be omitted.
 
 Use `WithOnMetadata` or `WithOnStats` when code needs hook-style callbacks
 instead of a captured result value.
