@@ -68,7 +68,8 @@ func (s Stats) HasResultSetStats() bool {
 // as a plain int64, so an absent row count and an exact zero row count are
 // indistinguishable; this method omits row count when RowCount is zero. Callers
 // that know RowCount is a standard DML count can use
-// [Stats.ResultSetStatsForDML].
+// [Stats.ResultSetStatsForDML] or [Stats.ResultSetStatsEncoded] with
+// [StatsEncodingDMLExact].
 //
 // When s has no top-level ResultSetStats fields to encode, ResultSetStats returns
 // nil, nil so callers can omit the stats field from an enclosing ResultSet
@@ -77,7 +78,7 @@ func (s Stats) HasResultSetStats() bool {
 // ResultSetStats returns an error if QueryStats contains a key or value that
 // cannot be represented by structpb.Struct.
 func (s Stats) ResultSetStats() (*sppb.ResultSetStats, error) {
-	return s.resultSetStats(s.RowCount != 0)
+	return s.ResultSetStatsEncoded(StatsEncodingDefault)
 }
 
 // ResultSetStatsForDML returns s as ResultSetStats for standard DML and always
@@ -98,7 +99,7 @@ func (s Stats) ResultSetStats() (*sppb.ResultSetStats, error) {
 // ResultSetStatsForDML returns an error if QueryStats contains a key or
 // value that cannot be represented by structpb.Struct.
 func (s Stats) ResultSetStatsForDML() (*sppb.ResultSetStats, error) {
-	return s.resultSetStats(true)
+	return s.ResultSetStatsEncoded(StatsEncodingDMLExact)
 }
 
 func (s Stats) resultSetStats(includeExactRowCount bool) (*sppb.ResultSetStats, error) {
@@ -241,6 +242,9 @@ func WithOnStats(f func(Stats)) Option {
 // Consumers should stop processing and return or break on the first non-nil
 // error. On terminal errors, [WithResult] contains only lifecycle data observed
 // before the error, and [WithOnStats] is not called.
+//
+// Consumers using [iter.Pull2] should prefer [PullRowIteratorSeq], which
+// normalizes terminal errors so pull returns ok=false when err!=nil.
 func RowIteratorSeq(rowIter *spanner.RowIterator, opts ...Option) iter.Seq2[*spanner.Row, error] {
 	if rowIter == nil {
 		cfg := newConfig(opts)

@@ -23,7 +23,13 @@ preserving the Spanner iterator lifecycle.
 - `Stats.HasResultSetStats`: deprecated; call `ResultSetStats` and check for a
   nil message instead.
 - `Stats.ResultSetStatsForDML`: converts captured standard DML stats when `RowCount`
-  must be represented as `row_count_exact`, including zero.
+  must be represented as `row_count_exact`, including zero. Same as
+  `ResultSetStatsEncoded(StatsEncodingDMLExact)`. Do not use for PLAN mode.
+- `Stats.ResultSetStatsEncoded` / `StatsEncoding`: preferred way to select row-count
+  encoding without branching on two methods in callers.
+- `RowIteratorResult.ResultSet`: builds `*sppb.ResultSet` from materialized rows
+  and captured lifecycle data.
+- `PullRowIteratorSeq`: `iter.Pull2` adapter that normalizes terminal errors.
 - `WithDrainOnEarlyStop`: optionally drains remaining rows after an early consumer stop so stats can be populated.
 - `Rows`: adapt already-built rows for tests and virtual result sets.
 - `SliceToRowSeq`: adapt existing `[]*spanner.Row` fixtures for downstream tests and fakes.
