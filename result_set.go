@@ -7,8 +7,17 @@ import (
 
 // StatsProto returns captured stats as *sppb.ResultSetStats using the encoding
 // configured by [WithStatsEncoding] when the iterator was drained.
+//
+// Row counts are encoded only after stats were captured at [iterator.Done].
+// Query plan and query stats encode from the captured [Stats] value whenever
+// present. Partial results from errors omit row counts even when
+// [StatsEncodingDMLExact] is configured.
 func (r RowIteratorResult) StatsProto() (*sppb.ResultSetStats, error) {
-	return r.Stats.resultSetStats(r.statsEnc.encodeRowCount(r.Stats.RowCount))
+	encodeRowCount := false
+	if r.statsCaptured {
+		encodeRowCount = r.statsEnc.encodeRowCount(r.Stats.RowCount)
+	}
+	return r.Stats.resultSetStats(encodeRowCount)
 }
 
 // ResultSet builds a protobuf ResultSet from materialized rows and iterator

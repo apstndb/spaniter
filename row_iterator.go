@@ -73,10 +73,11 @@ func (s Stats) resultSetStats(encodeRowCount bool) (*sppb.ResultSetStats, error)
 // protos as read-only. Stats protobuf encoding is configured by
 // [WithStatsEncoding] on the drain options.
 type RowIteratorResult struct {
-	Metadata *sppb.ResultSetMetadata
-	Stats    Stats
-	RowsRead int64
-	statsEnc StatsEncoding
+	Metadata      *sppb.ResultSetMetadata
+	Stats         Stats
+	RowsRead      int64
+	statsEnc      StatsEncoding
+	statsCaptured bool
 }
 
 // Option configures [RowIteratorSeq] and [DrainRowIterator].
@@ -290,6 +291,7 @@ func rowSourceSeq(src rowSource, opts ...Option) iter.Seq2[*spanner.Row, error] 
 			stats := src.stats()
 			if cfg.result != nil {
 				cfg.result.Stats = stats
+				cfg.result.statsCaptured = true
 			}
 			for _, f := range cfg.onStats {
 				f(stats)
@@ -378,12 +380,16 @@ func drainRowSource(src rowSource, opts ...Option) (*RowIteratorResult, error) {
 	var metadata *sppb.ResultSetMetadata
 	var metadataSent bool
 	outcome := func(includeStats bool) *RowIteratorResult {
-		result := &RowIteratorResult{RowsRead: rowsRead}
+		result := &RowIteratorResult{
+			RowsRead: rowsRead,
+			statsEnc: cfg.statsEncoding,
+		}
 		if metadataSent {
 			result.Metadata = metadata
 		}
 		if includeStats {
 			result.Stats = src.stats()
+			result.statsCaptured = true
 		}
 		return result
 	}

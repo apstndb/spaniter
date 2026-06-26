@@ -22,6 +22,7 @@ func PullRowIteratorSeq(rowIter *spanner.RowIterator, opts ...Option) (pull func
 	pull = func() (*spanner.Row, error, bool) {
 		row, err, ok := rawPull()
 		if err != nil {
+			stop()
 			return nil, err, false
 		}
 		return row, nil, ok

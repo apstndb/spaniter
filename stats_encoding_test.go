@@ -1,6 +1,7 @@
 package spaniter
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 )
 
 func iteratorResult(stats Stats, enc StatsEncoding) RowIteratorResult {
-	return RowIteratorResult{Stats: stats, statsEnc: enc}
+	return RowIteratorResult{Stats: stats, statsEnc: enc, statsCaptured: true}
 }
 
 func TestRowIteratorResult_StatsProto(t *testing.T) {
@@ -120,9 +121,10 @@ func TestRowIteratorResult_ResultSet(t *testing.T) {
 
 	md := &sppb.ResultSetMetadata{}
 	got, err := RowIteratorResult{
-		Metadata: md,
-		Stats:    Stats{RowCount: 0},
-		statsEnc: StatsEncodingDMLExact,
+		Metadata:      md,
+		Stats:         Stats{RowCount: 0},
+		statsEnc:      StatsEncodingDMLExact,
+		statsCaptured: true,
 	}.ResultSet(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -146,15 +148,75 @@ func TestWithStatsEncodingOnDrain(t *testing.T) {
 		wantStats: Stats{RowCount: 0},
 	}
 	var result RowIteratorResult
-	_, err := drainRowSource(src, WithResult(&result), WithStatsEncoding(StatsEncodingDMLExact))
+	got, err := drainRowSource(src, WithResult(&result), WithStatsEncoding(StatsEncodingDMLExact))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := result.StatsProto()
+	for _, r := range []*RowIteratorResult{&result, got} {
+		stats, err := r.StatsProto()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := stats.GetRowCount().(*sppb.ResultSetStats_RowCountExact); !ok {
+			t.Fatalf("RowCount type = %T, want RowCountExact", stats.GetRowCount())
+		}
+	}
+}
+
+func TestDrainRowSource_directReturnPreservesStatsEncoding(t *testing.T) {
+	t.Parallel()
+
+	md := metadataWithColumnNames("id")
+	src := &stubRowSource{
+		md:        md,
+		wantStats: Stats{RowCount: 0},
+	}
+	got, err := drainRowSource(src, WithStatsEncoding(StatsEncodingDMLExact))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := got.GetRowCount().(*sppb.ResultSetStats_RowCountExact); !ok {
-		t.Fatalf("RowCount type = %T, want RowCountExact", got.GetRowCount())
+	stats, err := got.StatsProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stats.GetRowCount().(*sppb.ResultSetStats_RowCountExact); !ok {
+		t.Fatalf("RowCount type = %T, want RowCountExact", stats.GetRowCount())
+	}
+}
+
+func TestRowIteratorResult_StatsProtoOmitsUncapturedDMLExact(t *testing.T) {
+	t.Parallel()
+
+	got, err := RowIteratorResult{
+		statsEnc: StatsEncodingDMLExact,
+	}.StatsProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("StatsProto = %v, want nil for uncaptured stats", got)
+	}
+}
+
+func TestDrainRowSource_midStreamErrorOmitsFabricatedDMLStats(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("stream failed")
+	src := &stubRowSource{
+		rows:  []*spanner.Row{mustNewRow(t, []string{"id"}, []any{int64(1)})},
+		md:    metadataWithColumnNames("id"),
+		errAt: 1,
+		err:   wantErr,
+	}
+	got, err := drainRowSource(src, WithStatsEncoding(StatsEncodingDMLExact))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	stats, err := got.StatsProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats != nil {
+		t.Fatalf("StatsProto = %v, want nil on partial drain", stats)
 	}
 }

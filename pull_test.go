@@ -58,9 +58,33 @@ func iterPull2Normalized(seq iter.Seq2[*spanner.Row, error]) (func() (*spanner.R
 	pull := func() (*spanner.Row, error, bool) {
 		row, err, ok := rawPull()
 		if err != nil {
+			stop()
 			return nil, err, false
 		}
 		return row, nil, ok
 	}
 	return pull, stop
+}
+
+func TestPullRowIteratorSeqStopsOnTerminalError(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("terminal")
+	src := &stubRowSource{
+		rows:  []*spanner.Row{{}},
+		md:    metadataWithColumnNames("id"),
+		errAt: 1,
+		err:   sentinel,
+	}
+	pull, _ := iterPull2Normalized(rowSourceSeq(src))
+
+	if _, err, ok := pull(); !ok || err != nil {
+		t.Fatalf("first pull = ok=%v err=%v", ok, err)
+	}
+	if _, err, ok := pull(); !errors.Is(err, sentinel) || ok {
+		t.Fatalf("second pull = ok=%v err=%v", ok, err)
+	}
+	if !src.stopped {
+		t.Fatal("source was not stopped after terminal error pull")
+	}
 }
