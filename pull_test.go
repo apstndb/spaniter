@@ -33,8 +33,7 @@ func TestPullRowIteratorSeqPullNormalizesError(t *testing.T) {
 		errAt: 1,
 		err:   sentinel,
 	}
-	pull, stop := iterPull2Normalized(rowSourceSeq(src))
-	defer stop()
+	pull, _ := iterPull2Normalized(rowSourceSeq(src))
 
 	if _, err, ok := pull(); !ok || err != nil {
 		t.Fatalf("first pull = ok=%v err=%v", ok, err)
@@ -66,6 +65,37 @@ func iterPull2Normalized(seq iter.Seq2[*spanner.Row, error]) (func() (*spanner.R
 	return pull, stop
 }
 
+func TestPullRowSourceSeqStopsBeforeFirstPull(t *testing.T) {
+	t.Parallel()
+
+	src := &stubRowSource{
+		rows: []*spanner.Row{{}},
+		md:   metadataWithColumnNames("id"),
+	}
+	_, stop := pullRowSourceSeq(src)
+	stop()
+	if !src.stopped {
+		t.Fatal("source was not stopped before first pull")
+	}
+}
+
+func TestPullRowSourceSeqStopsBeforeFirstPullResetsWithResult(t *testing.T) {
+	t.Parallel()
+
+	src := &stubRowSource{
+		rows: []*spanner.Row{{}},
+		md:   metadataWithColumnNames("id"),
+	}
+	var result RowIteratorResult
+	result.Metadata = metadataWithColumnNames("stale")
+	result.RowsRead = 99
+	_, stop := pullRowSourceSeq(src, WithResult(&result))
+	stop()
+	if result.Metadata != nil || result.RowsRead != 0 {
+		t.Fatalf("WithResult = %+v, want reset before first pull", result)
+	}
+}
+
 func TestPullRowIteratorSeqStopsOnTerminalError(t *testing.T) {
 	t.Parallel()
 
@@ -76,7 +106,7 @@ func TestPullRowIteratorSeqStopsOnTerminalError(t *testing.T) {
 		errAt: 1,
 		err:   sentinel,
 	}
-	pull, _ := iterPull2Normalized(rowSourceSeq(src))
+	pull, _ := pullRowSourceSeq(src)
 
 	if _, err, ok := pull(); !ok || err != nil {
 		t.Fatalf("first pull = ok=%v err=%v", ok, err)

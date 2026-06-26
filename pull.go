@@ -13,13 +13,39 @@ import (
 // (nil, err, true). This matches the usual "check err before ok" pattern and
 // avoids treating iterator failures as EOF.
 //
-// The returned stop function signals the sequence to stop. RowIteratorSeq owns
-// the RowIterator and calls Stop when the sequence goroutine exits; callers
-// should not call [*spanner.RowIterator.Stop] directly after iteration starts.
+// The returned stop function releases the RowIterator. If stop runs before the
+// first pull, stop calls RowIterator.Stop directly because [iter.Pull2] has not
+// started the sequence yet. After the first pull, stop signals the sequence and
+// RowIteratorSeq owns Stop when the sequence goroutine exits.
 func PullRowIteratorSeq(rowIter *spanner.RowIterator, opts ...Option) (pull func() (*spanner.Row, error, bool), stop func()) {
-	seq := RowIteratorSeq(rowIter, opts...)
-	rawPull, stop := iter.Pull2(seq)
+	if rowIter == nil {
+		return pullRowSourceSeq(nil, opts...)
+	}
+	return pullRowSourceSeq(spannerRowSource{rowIter}, opts...)
+}
+
+func pullRowSourceSeq(src rowSource, opts ...Option) (pull func() (*spanner.Row, error, bool), stop func()) {
+	cfg := newConfig(opts)
+	seq := rowSourceSeq(src, opts...)
+	rawPull, rawStop := iter.Pull2(seq)
+
+	var pulled bool
+	var stopped bool
+	stop = func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		if !pulled {
+			resetResult(cfg)
+			if src != nil {
+				src.stop()
+			}
+		}
+		rawStop()
+	}
 	pull = func() (*spanner.Row, error, bool) {
+		pulled = true
 		row, err, ok := rawPull()
 		if err != nil {
 			stop()
