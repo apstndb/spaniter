@@ -29,8 +29,8 @@ var ErrNilRow = errors.New("nil row")
 // the underlying RowIterator; treat returned maps and protos as read-only.
 //
 // Stats mirrors the public fields exposed by
-// [cloud.google.com/go/spanner.RowIterator]. Use [Stats.ResultSetStats] when
-// downstream code needs the protobuf ResultSetStats shape. The Go client has
+// [cloud.google.com/go/spanner.RowIterator]. Use [RowIteratorResult.StatsProto]
+// when downstream code needs the protobuf ResultSetStats shape. The Go client has
 // already decoded query stats to a map and exposes row count as a single int64,
 // so Stats cannot distinguish an absent row count from row_count_exact:0. The
 // Go client's PartitionedUpdate APIs return counts directly rather than through
@@ -41,68 +41,8 @@ type Stats struct {
 	RowCount   int64
 }
 
-// HasResultSetStats reports whether s has fields that [Stats.ResultSetStats]
-// would encode.
-//
-// Deprecated: call [Stats.ResultSetStats] and check whether the returned message
-// is nil instead.
-//
-// This is useful when callers build an enclosing ResultSet and want to omit the
-// stats field when the default conversion would be empty. It returns false for
-// DML row_count_exact:0 because Stats cannot distinguish exact zero from an
-// absent row count. Callers that know the Stats came from standard DML and need
-// row_count_exact:0 should call [Stats.ResultSetStatsForDML] directly.
-func (s Stats) HasResultSetStats() bool {
-	return s.QueryPlan != nil || s.QueryStats != nil || s.RowCount != 0
-}
-
-// ResultSetStats returns s in Cloud Spanner protobuf ResultSetStats form.
-//
-// Most callers should use this method. The row-count caveat below matters only
-// to consumers that distinguish an absent row_count from row_count_exact:0; code
-// that treats an absent row_count as the zero value sees the same count either
-// way.
-//
-// QueryPlan is reused, QueryStats is re-encoded as a protobuf Struct, and a
-// non-zero RowCount is encoded as row_count_exact. RowIterator exposes row count
-// as a plain int64, so an absent row count and an exact zero row count are
-// indistinguishable; this method omits row count when RowCount is zero. Callers
-// that know RowCount is a standard DML count can use
-// [Stats.ResultSetStatsForDML].
-//
-// When s has no top-level ResultSetStats fields to encode, ResultSetStats returns
-// nil, nil so callers can omit the stats field from an enclosing ResultSet
-// without a separate presence check.
-//
-// ResultSetStats returns an error if QueryStats contains a key or value that
-// cannot be represented by structpb.Struct.
-func (s Stats) ResultSetStats() (*sppb.ResultSetStats, error) {
-	return s.resultSetStats(s.RowCount != 0)
-}
-
-// ResultSetStatsForDML returns s as ResultSetStats for standard DML and always
-// encodes RowCount as row_count_exact, including zero.
-//
-// This method is for consumers that need protobuf oneof presence to distinguish
-// DML row_count_exact:0 from an absent row_count. If the consumer treats an
-// absent row_count as the zero value, [Stats.ResultSetStats] is sufficient.
-//
-// Use this method only when the caller knows the Stats came from standard DML.
-// Using it for query stats creates a misleading row_count_exact field even
-// though the Spanner API would omit row_count for queries. Using
-// [Stats.ResultSetStats] for DML is fine for non-zero row counts, but loses the
-// distinction between absent row count and row_count_exact:0. Partitioned DML is
-// outside spaniter's RowIterator path because the Go client exposes it through
-// Client.PartitionedUpdate, not RowIterator.
-//
-// ResultSetStatsForDML returns an error if QueryStats contains a key or
-// value that cannot be represented by structpb.Struct.
-func (s Stats) ResultSetStatsForDML() (*sppb.ResultSetStats, error) {
-	return s.resultSetStats(true)
-}
-
-func (s Stats) resultSetStats(includeExactRowCount bool) (*sppb.ResultSetStats, error) {
-	if !includeExactRowCount && s.QueryPlan == nil && s.QueryStats == nil {
+func (s Stats) resultSetStats(encodeRowCount bool) (*sppb.ResultSetStats, error) {
+	if !encodeRowCount && s.QueryPlan == nil && s.QueryStats == nil {
 		return nil, nil
 	}
 
@@ -119,7 +59,7 @@ func (s Stats) resultSetStats(includeExactRowCount bool) (*sppb.ResultSetStats, 
 		QueryPlan:  s.QueryPlan,
 		QueryStats: queryStats,
 	}
-	if includeExactRowCount {
+	if encodeRowCount {
 		stats.RowCount = &sppb.ResultSetStats_RowCountExact{RowCountExact: s.RowCount}
 	}
 	return stats, nil
@@ -130,11 +70,20 @@ func (s Stats) resultSetStats(includeExactRowCount bool) (*sppb.ResultSetStats, 
 //
 // RowsRead counts rows consumed from the iterator. Metadata and Stats values
 // are not deep-copied from the underlying RowIterator; treat returned maps and
-// protos as read-only.
+// protos as read-only. Stats protobuf encoding is configured by
+// [WithStatsEncoding] on the drain options.
+//
+// Values returned or captured by [RowIteratorSeq], [DrainRowIterator], and
+// [PullRowIteratorSeq] carry unexported lifecycle state required by
+// [RowIteratorResult.StatsProto] and [RowIteratorResult.ResultSet]. Do not
+// construct RowIteratorResult manually for protobuf conversion; use
+// [WithResult] or the value returned from [DrainRowIterator].
 type RowIteratorResult struct {
-	Metadata *sppb.ResultSetMetadata
-	Stats    Stats
-	RowsRead int64
+	Metadata      *sppb.ResultSetMetadata
+	Stats         Stats
+	RowsRead      int64
+	statsEnc      StatsEncoding
+	statsCaptured bool
 }
 
 // Option configures [RowIteratorSeq] and [DrainRowIterator].
@@ -142,6 +91,7 @@ type Option func(*config)
 
 type config struct {
 	drainOnEarlyStop bool
+	statsEncoding    StatsEncoding
 	result           *RowIteratorResult
 	onMetadata       []func(*sppb.ResultSetMetadata)
 	onStats          []func(Stats)
@@ -159,7 +109,7 @@ func newConfig(opts []Option) config {
 
 func resetResult(cfg config) {
 	if cfg.result != nil {
-		*cfg.result = RowIteratorResult{}
+		*cfg.result = RowIteratorResult{statsEnc: cfg.statsEncoding}
 	}
 }
 
@@ -241,6 +191,9 @@ func WithOnStats(f func(Stats)) Option {
 // Consumers should stop processing and return or break on the first non-nil
 // error. On terminal errors, [WithResult] contains only lifecycle data observed
 // before the error, and [WithOnStats] is not called.
+//
+// Consumers using [iter.Pull2] should prefer [PullRowIteratorSeq], which
+// normalizes terminal errors so pull returns ok=false when err!=nil.
 func RowIteratorSeq(rowIter *spanner.RowIterator, opts ...Option) iter.Seq2[*spanner.Row, error] {
 	if rowIter == nil {
 		cfg := newConfig(opts)
@@ -344,6 +297,7 @@ func rowSourceSeq(src rowSource, opts ...Option) iter.Seq2[*spanner.Row, error] 
 			stats := src.stats()
 			if cfg.result != nil {
 				cfg.result.Stats = stats
+				cfg.result.statsCaptured = true
 			}
 			for _, f := range cfg.onStats {
 				f(stats)
@@ -432,12 +386,16 @@ func drainRowSource(src rowSource, opts ...Option) (*RowIteratorResult, error) {
 	var metadata *sppb.ResultSetMetadata
 	var metadataSent bool
 	outcome := func(includeStats bool) *RowIteratorResult {
-		result := &RowIteratorResult{RowsRead: rowsRead}
+		result := &RowIteratorResult{
+			RowsRead: rowsRead,
+			statsEnc: cfg.statsEncoding,
+		}
 		if metadataSent {
 			result.Metadata = metadata
 		}
 		if includeStats {
 			result.Stats = src.stats()
+			result.statsCaptured = true
 		}
 		return result
 	}

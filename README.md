@@ -17,13 +17,14 @@ preserving the Spanner iterator lifecycle.
 - `WithOnMetadata`: invokes a callback once when `ResultSetMetadata` becomes available.
 - `WithOnStats`: invokes a callback after completion with query plan, query
   stats, and DML row count.
-- `Stats.ResultSetStats`: converts captured stats to `*sppb.ResultSetStats`
-  for protobuf-oriented downstream code. Returns `nil, nil` when there are no
-  top-level ResultSetStats fields to encode.
-- `Stats.HasResultSetStats`: deprecated; call `ResultSetStats` and check for a
-  nil message instead.
-- `Stats.ResultSetStatsForDML`: converts captured standard DML stats when `RowCount`
-  must be represented as `row_count_exact`, including zero.
+- `WithStatsEncoding`: selects row-count protobuf encoding for drained results.
+- `RowIteratorResult.StatsProto`: converts captured stats to `*sppb.ResultSetStats`
+  using the encoding from drain options. Returns `nil, nil` when there are no
+  top-level ResultSetStats fields to encode. Use only on values returned or
+  captured by spaniter; manual struct literals omit unexported lifecycle state.
+- `RowIteratorResult.ResultSet`: builds `*sppb.ResultSet` from materialized rows
+  and captured lifecycle data.
+- `PullRowIteratorSeq`: `iter.Pull2` adapter that normalizes terminal errors.
 - `WithDrainOnEarlyStop`: optionally drains remaining rows after an early consumer stop so stats can be populated.
 - `Rows`: adapt already-built rows for tests and virtual result sets.
 - `SliceToRowSeq`: adapt existing `[]*spanner.Row` fixtures for downstream tests and fakes.
@@ -118,22 +119,32 @@ _ = result.Stats
 _ = result.RowsRead
 ```
 
-Use `Stats.ResultSetStats` when downstream code needs Cloud Spanner's
-`*sppb.ResultSetStats` protobuf shape. It re-encodes query stats and represents
-non-zero `RowCount` as `row_count_exact`. Because `RowIterator` exposes row
-count as a plain `int64`, an absent row count and an exact zero DML row count
-cannot be distinguished. Use `Stats.ResultSetStatsForDML` when the caller knows
-the stats came from standard DML and needs `row_count_exact: 0` to be preserved.
-Do not use the DML method for ordinary queries: it would synthesize a
-`row_count_exact` field even though the Spanner API omits `row_count` for query
-stats. Conversely, using `ResultSetStats` for DML preserves non-zero counts but
-drops the explicit `row_count_exact: 0` case. The usual
-`ReadWriteTransaction.Update` and `Client.PartitionedUpdate` APIs return counts
-directly rather than through a `RowIterator`; handle those counts separately.
-Assign the result of `Stats.ResultSetStats` to an enclosing `ResultSet` only
-when the returned message is non-nil; a `nil` return means there are no
-top-level ResultSetStats fields to encode. When calling `Stats.ResultSetStatsForDML`, assign the
-returned message directly, including for a zero count.
+Use `WithStatsEncoding` when draining if the caller knows the result came from
+executed standard DML and needs `row_count_exact: 0` preserved. The default
+encoding omits zero row counts because `RowIterator` exposes row count as a
+plain `int64` and cannot distinguish absent row count from exact zero. Do not
+use `StatsEncodingDMLExact` for PLAN mode or read-only queries.
+
+```go
+result, err := spaniter.DrainRowIterator(rowIter,
+	spaniter.WithStatsEncoding(spaniter.StatsEncodingDMLExact),
+)
+if err != nil {
+	return err
+}
+stats, err := result.StatsProto()
+rs, err := result.ResultSet(rows)
+```
+
+`StatsProto` and `ResultSet` depend on unexported state set during draining.
+Use the value returned from `DrainRowIterator` or a `WithResult` capture target;
+do not build `RowIteratorResult` manually for protobuf conversion. Callers that
+only need the `Stats` struct can keep using `WithOnStats` without protobuf
+conversion.
+
+`StatsProto` returns `nil, nil` when there are no top-level ResultSetStats
+fields to encode. Partitioned DML counts come from `Client.PartitionedUpdate`,
+not `RowIterator`.
 
 Use `WithOnMetadata` or `WithOnStats` when code needs hook-style callbacks
 instead of a captured result value.
@@ -182,6 +193,32 @@ rows := spaniter.RowIteratorSeq(rowIter,
 	}),
 )
 ```
+
+## PullRowIteratorSeq
+
+Consumers using `iter.Pull2` should prefer `PullRowIteratorSeq`. It normalizes
+terminal errors: when the sequence yields `(nil, err)`, pull returns
+`(nil, err, false)` instead of `(nil, err, true)`. Check `err` before `ok`.
+
+```go
+pull, stop := spaniter.PullRowIteratorSeq(rowIter)
+defer stop()
+
+for {
+	row, err, ok := pull()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		break
+	}
+	_ = row
+}
+```
+
+`stop` releases the `RowIterator` even when called before the first `pull`.
+After the first pull, `RowIteratorSeq` owns the iterator until the sequence
+ends.
 
 ## Example: spanvalue/writer
 
